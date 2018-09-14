@@ -3,7 +3,7 @@ use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 
 use jobserver::Client;
 use shell_escape::escape;
@@ -150,6 +150,24 @@ impl ProcessBuilder {
         }
     }
 
+    /// Spawns the process as a child and returns a handle without waiting for completion.
+    pub fn spawn(&self) -> CargoResult<Child> {
+        let mut command = self.build_command();
+        let res = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn();
+
+        match res {
+            Err(e) => Err(process_error(
+                &format!("Could not spawn process: {}", e),
+                None,
+                None
+            ).into()),
+            Ok(child) => Ok(child)
+        }
+    }
+
     /// Replaces the current process with the target process.
     ///
     /// On Unix, this executes the process using the unix syscall `execvp`, which will block
@@ -176,6 +194,27 @@ impl ProcessBuilder {
         let output = command.output().chain_err(|| {
             process_error(
                 &format!("could not execute process {}", self),
+                None,
+                None,
+            )
+        })?;
+
+        if output.status.success() {
+            Ok(output)
+        } else {
+            Err(process_error(
+                &format!("process didn't exit successfully: {}", self),
+                Some(output.status),
+                Some(&output),
+            ).into())
+        }
+    }
+
+    /// Waits on output from the given child process, or an error if non-zero exit status.
+    pub fn wait_with_output(&self, child : Child) -> CargoResult<Output> {
+        let output = child.wait_with_output().chain_err(|| {
+            process_error(
+                &format!("could not wait on process {}", self),
                 None,
                 None,
             )

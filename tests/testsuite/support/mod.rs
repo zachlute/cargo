@@ -111,7 +111,7 @@ use std::fs;
 use std::io::prelude::*;
 use std::os;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output};
 use std::str;
 use std::time::Duration;
 use std::usize;
@@ -727,7 +727,20 @@ impl Execs {
     pub fn run(&mut self) {
         self.ran = true;
         let p = (&self.process_builder).clone().unwrap();
-        if let Err(e) = self.match_process(&p) {
+        if let Err(e) = self.match_process(&p, None) {
+            panic!("\nExpected: {:?}\n    but: {}", self, e)
+        }
+    }
+
+    pub fn spawn(&mut self) -> CargoResult<Child> {
+        self.ran = true;
+        let p = (&self.process_builder).clone().unwrap();
+        p.spawn()
+    }
+
+    pub fn wait(&mut self, child : Child) {
+        let p = (&self.process_builder).clone().unwrap();
+        if let Err(e) = self.match_process(&p, Some(child)) {
             panic!("\nExpected: {:?}\n    but: {}", self, e)
         }
     }
@@ -739,9 +752,11 @@ impl Execs {
         }
     }
 
-    fn match_process(&self, process: &ProcessBuilder) -> MatchResult {
+    fn match_process(&self, process: &ProcessBuilder, child: Option<Child>) -> MatchResult {
         println!("running {}", process);
-        let res = if self.stream_output {
+        let res = if let Some(child) = child {
+            process.wait_with_output(child)
+        } else if self.stream_output {
             if env::var("CI").is_ok() {
                 panic!("`.stream()` is for local debugging")
             }

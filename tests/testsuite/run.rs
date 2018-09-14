@@ -1029,3 +1029,133 @@ fn default_run_workspace() {
         .with_stdout("run-a")
         .run();
 }
+
+#[cfg(windows)]
+mod windows {
+    use std::process::Command;
+    use std::thread;
+    use std::time::Duration;
+    use support::project;
+
+    use winapi::shared::minwindef::{FALSE, TRUE};
+    use winapi::um::consoleapi::SetConsoleCtrlHandler;
+
+    #[test]
+    fn ctrlc_handled_by_child() {
+        let p = project()
+            .file(
+                "Cargo.toml",
+                r#"
+            [workspace]
+            members = ["foo", "ctrlc-sender"]
+            "#)
+            .file(
+                "foo/Cargo.toml",
+            r#"
+            [package]
+            name = "foo"
+            version = "0.1.0"
+
+            [dependencies.winapi]
+            version = "0.3"
+            features = [
+              "consoleapi",
+              "minwindef"
+            ]
+            "#)
+            .file(
+                "foo/src/main.rs",
+                r#"
+                extern crate winapi;
+
+                use winapi::shared::minwindef::{BOOL, DWORD, FALSE, TRUE};
+                use winapi::um::consoleapi::SetConsoleCtrlHandler;
+
+                unsafe extern "system" fn ctrlc_handler(_: DWORD) -> BOOL {
+                    println!("Ctrl-C handled!");
+                    FALSE
+                }
+
+                fn main() {
+                    unsafe {
+                        SetConsoleCtrlHandler(Some(ctrlc_handler), TRUE);
+                    }
+
+                    println!("Running!");
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    println!("Ended normally.");
+                }
+            "#)
+            .file(
+                "ctrlc-sender/Cargo.toml",
+                r#"
+            [package]
+            name = "ctrlc-sender"
+            version = "0.1.0"
+
+            [dependencies.winapi]
+            version = "0.3"
+            features = [
+              "consoleapi",
+              "minwindef"
+            ]
+            "#)
+            .file(
+                "ctrlc-sender/src/main.rs",
+                r#"
+                extern crate winapi;
+
+                use winapi::shared::minwindef::{DWORD, FALSE, TRUE};
+                use winapi::um::consoleapi::SetConsoleCtrlHandler;
+                use winapi::um::wincon::{AttachConsole, FreeConsole, GenerateConsoleCtrlEvent};
+
+                fn main() {
+                    let pid : i32 = std::env::args().nth(1).unwrap().parse().unwrap();
+
+                    unsafe {
+                        let pid = pid as DWORD;
+                        FreeConsole();
+                        AttachConsole(pid);
+                        SetConsoleCtrlHandler(None, TRUE);
+                        GenerateConsoleCtrlEvent(0, 0);
+                        std::thread::sleep(std::time::Duration::from_secs(2));
+                        FreeConsole();
+                        SetConsoleCtrlHandler(None, FALSE);
+                    }
+                }
+            "#)
+            .build();
+
+        p.cargo("build").run();
+
+        let mut run = p.cargo("run --bin foo");
+        let run = run
+            .with_status(0)
+            .with_stdout_contains("Ctrl-C handled!")
+            .with_stdout_does_not_contain("Ended normally.");
+
+        let child = run.spawn().unwrap();
+
+        // Give the process time to get into its loop.
+        thread::sleep(Duration::from_secs(1));
+
+        unsafe {
+            SetConsoleCtrlHandler(None, TRUE);
+        }
+
+        // Run the ctrlc-sender on the running cargo run process.
+        // Can't run it with Cargo, though. We're already running with Cargo.
+        Command::new(p.bin("ctrlc-sender"))
+            .arg(child.id().to_string())
+            .status()
+            .unwrap();
+
+        unsafe {
+            SetConsoleCtrlHandler(None, FALSE);
+        }
+
+        // Waiting will cause the output to be checked.
+        run.wait(child);
+    }
+}
+
